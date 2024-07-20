@@ -8,6 +8,15 @@ import {
   DockerImageFunction,
   IFunction,
 } from "aws-cdk-lib/aws-lambda";
+
+import {
+  LambdaRestApi,
+  LambdaIntegration,
+  CognitoUserPoolsAuthorizer,
+  AuthorizationType,
+  EndpointType
+} from "aws-cdk-lib/aws-apigateway";
+
 import {
   CorsHttpMethod,
   HttpApi,
@@ -40,7 +49,8 @@ export interface ApiProps {
 }
 
 export class Api extends Construct {
-  readonly api: HttpApi;
+  readonly api: LambdaRestApi;
+  readonly privateUrl: string;
   readonly handler: IFunction;
   constructor(scope: Construct, id: string, props: ApiProps) {
     super(scope, id);
@@ -50,6 +60,11 @@ export class Api extends Construct {
       tableAccessRole,
       corsAllowOrigins: allowOrigins = ["*"],
     } = props;
+
+    const vpcEndpoint = props.vpc.addInterfaceEndpoint('APIGWVpcEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.APIGATEWAY,
+      privateDnsEnabled: false
+    });
 
     const usageAnalysisOutputLocation =
       `s3://${props.usageAnalysis?.resultOutputBucket.bucketName}` || "";
@@ -211,8 +226,16 @@ export class Api extends Construct {
     });
     props.dbSecrets.grantRead(handler);
 
-    const api = new HttpApi(this, "Default", {
-      corsPreflight: {
+    // const integration = new LambdaIntegration(handler);
+
+    const authorizer = new CognitoUserPoolsAuthorizer(this, "Authorizer", {
+      cognitoUserPools: [props.auth.userPool]
+    });
+
+    const api = new LambdaRestApi(this, "Default", {
+      handler: handler,
+      proxy: true,
+      defaultCorsPreflightOptions: {
         allowHeaders: ["*"],
         allowMethods: [
           CorsHttpMethod.GET,
@@ -224,36 +247,46 @@ export class Api extends Construct {
           CorsHttpMethod.DELETE,
         ],
         allowOrigins: allowOrigins,
+        allowCredentials: true,
         maxAge: Duration.days(10),
       },
+      defaultMethodOptions: {
+        authorizationType: AuthorizationType.COGNITO,
+        authorizer
+      },
+      endpointConfiguration: {
+        types: [ EndpointType.PRIVATE ],
+        vpcEndpoints: [ vpcEndpoint ]
+      },
+      policy: new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['execute-api:Invoke'],
+            principals:[new iam.AnyPrincipal()],
+            resources: [`arn:aws:execute-api:${Stack.of(this).region}:${Stack.of(this).account}:*`]
+          })
+        ]
+      })
     });
 
-    const integration = new HttpLambdaIntegration("Integration", handler);
-    const authorizer = new HttpUserPoolAuthorizer(
-      "Authorizer",
-      props.auth.userPool,
-      {
-        userPoolClients: [props.auth.client],
-      }
-    );
-    let routeProps: any = {
-      path: "/{proxy+}",
-      integration,
-      methods: [
-        HttpMethod.GET,
-        HttpMethod.POST,
-        HttpMethod.PUT,
-        HttpMethod.PATCH,
-        HttpMethod.DELETE,
-      ],
-      authorizer,
-    };
-
-    api.addRoutes(routeProps);
+    // let routeProps: any = {
+    //   path: "/{proxy+}",
+    //   integration,
+    //   methods: [
+    //     HttpMethod.GET,
+    //     HttpMethod.POST,
+    //     HttpMethod.PUT,
+    //     HttpMethod.PATCH,
+    //     HttpMethod.DELETE,
+    //   ],
+    //   authorizer,
+    // };
 
     this.api = api;
     this.handler = handler;
+    this.privateUrl = `https://${api.restApiId}-${vpcEndpoint.vpcEndpointId}.execute-api.${Stack.of(this).region}.amazonaws.com/prod/`
 
-    new CfnOutput(this, "BackendApiUrl", { value: api.apiEndpoint });
+    new CfnOutput(this, "BackendApiUrl", { value: this.privateUrl });
   }
 }

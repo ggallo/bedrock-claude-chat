@@ -200,7 +200,7 @@ export class BedrockChatStack extends cdk.Stack {
       enableMistral: props.enableMistral,
     });
     frontend.buildViteApp({
-      backendApiEndpoint: backendApi.api.apiEndpoint,
+      backendApiEndpoint: backendApi.privateUrl,
       webSocketApiEndpoint: websocket.apiEndpoint,
       userPoolDomainPrefix: props.userPoolDomainPrefix,
       enableMistral: props.enableMistral,
