@@ -8,6 +8,12 @@ import { CronScheduleProps } from "../lib/utils/cron-schedule";
 
 const app = new cdk.App();
 
+const VPC_ID: string = app.node.getContext("vpcId");
+const SUBNET_IDS: string = app.node.getContext("privateSubnetIds");
+const APIGW_ENDPOINT_ID: string = app.node.getContext("apiGatewayEndpointId");
+
+const USE_STREAMING: boolean = app.node.tryGetContext("useStreaming");
+
 const BEDROCK_REGION = app.node.tryGetContext("bedrockRegion");
 
 // Allowed IP address ranges for this app itself
@@ -55,7 +61,7 @@ const NATGATEWAY_COUNT: number = app.node.tryGetContext("natgatewayCount");
 // https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-wafv2-webacl.html
 const waf = new FrontendWafStack(app, `FrontendWafStack`, {
   env: {
-    // account: process.env.CDK_DEFAULT_ACCOUNT,
+    account: process.env.CDK_DEFAULT_ACCOUNT,
     region: "us-east-1",
   },
   allowedIpV4AddressRanges: ALLOWED_IP_V4_ADDRESS_RANGES,
@@ -64,10 +70,14 @@ const waf = new FrontendWafStack(app, `FrontendWafStack`, {
 
 const chat = new BedrockChatStack(app, `BedrockChatStack`, {
   env: {
-    // account: process.env.CDK_DEFAULT_ACCOUNT,
+    account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,
   },
   crossRegionReferences: true,
+  vpcId: VPC_ID,
+  subnetIds: SUBNET_IDS,
+  apiGatewayEndpointId: APIGW_ENDPOINT_ID,
+  useStreaming: USE_STREAMING,
   bedrockRegion: BEDROCK_REGION,
   webAclId: waf.webAclArn.value,
   enableIpV6: waf.ipV6Enabled,

@@ -26,6 +26,10 @@ import * as path from "path";
 import { BedrockKnowledgeBaseCodebuild } from "./constructs/bedrock-knowledge-base-codebuild";
 
 export interface BedrockChatStackProps extends StackProps {
+  readonly vpcId: string;
+  readonly subnetIds: string;
+  readonly apiGatewayEndpointId: string;
+  readonly useStreaming: boolean;
   readonly bedrockRegion: string;
   readonly webAclId: string;
   readonly identityProviders: TIdentityProvider[];
@@ -44,6 +48,7 @@ export interface BedrockChatStackProps extends StackProps {
 }
 
 export class BedrockChatStack extends cdk.Stack {
+
   constructor(scope: Construct, id: string, props: BedrockChatStackProps) {
     super(scope, id, {
       description: "Bedrock Chat Stack (uksb-1tupboc46)",
@@ -51,17 +56,20 @@ export class BedrockChatStack extends cdk.Stack {
     });
     const cronSchedule = createCronSchedule(props.rdsSchedules);
 
-    const vpc = new ec2.Vpc(this, "VPC", {
-      natGateways: props.natgatewayCount,
-    });
-    vpc.publicSubnets.forEach((subnet) => {
-      (subnet.node.defaultChild as ec2.CfnSubnet).mapPublicIpOnLaunch = false;
+    const vpc = ec2.Vpc.fromLookup(this, "VPC", {
+      vpcId: props.vpcId
     });
 
-    const vectorStore = new VectorStore(this, "VectorStore", {
-      vpc: vpc,
-      rdsSchedule: cronSchedule,
-    });
+    const subnets = props.subnetIds.split(",").map((subnetId, idx) =>
+      ec2.Subnet.fromSubnetAttributes(this, `Subnet-${idx}`, {
+        subnetId: subnetId
+      })
+    );
+
+    // const vectorStore = new VectorStore(this, "VectorStore", {
+    //   vpc: vpc,
+    //   rdsSchedule: cronSchedule,
+    // });
     const idp = identityProvider(props.identityProviders);
 
     const accessLogBucket = new Bucket(this, "AccessLogBucket", {
@@ -85,57 +93,58 @@ export class BedrockChatStack extends cdk.Stack {
     });
 
     // Bucket for source code
-    const sourceBucket = new Bucket(this, "SourceBucketForCodeBuild", {
-      encryption: BucketEncryption.S3_MANAGED,
-      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
-      enforceSSL: true,
-      removalPolicy: RemovalPolicy.DESTROY,
-      objectOwnership: ObjectOwnership.OBJECT_WRITER,
-      autoDeleteObjects: true,
-      serverAccessLogsBucket: accessLogBucket,
-      serverAccessLogsPrefix: "SourceBucketForCodeBuild",
-    });
-    new s3deploy.BucketDeployment(this, "SourceDeploy", {
-      sources: [
-        s3deploy.Source.asset(path.join(__dirname, "../../"), {
-          ignoreMode: IgnoreMode.GIT,
-          exclude: [
-            "**/node_modules/**",
-            "**/dist/**",
-            "**/.venv/**",
-            "**/__pycache__/**",
-            "**/cdk.out/**",
-            "**/.vscode/**",
-            "**/.DS_Store/**",
-            "**/.git/**",
-            "**/.github/**",
-            "**/.mypy_cache/**",
-          ],
-        }),
-      ],
-      destinationBucket: sourceBucket,
-    });
+    // const sourceBucket = new Bucket(this, "SourceBucketForCodeBuild", {
+    //   encryption: BucketEncryption.S3_MANAGED,
+    //   blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+    //   enforceSSL: true,
+    //   removalPolicy: RemovalPolicy.DESTROY,
+    //   objectOwnership: ObjectOwnership.OBJECT_WRITER,
+    //   autoDeleteObjects: true,
+    //   serverAccessLogsBucket: accessLogBucket,
+    //   serverAccessLogsPrefix: "SourceBucketForCodeBuild",
+    // });
+    // new s3deploy.BucketDeployment(this, "SourceDeploy", {
+    //   sources: [
+    //     s3deploy.Source.asset(path.join(__dirname, "../../"), {
+    //       ignoreMode: IgnoreMode.GIT,
+    //       exclude: [
+    //         "**/node_modules/**",
+    //         "**/dist/**",
+    //         "**/.venv/**",
+    //         "**/__pycache__/**",
+    //         "**/cdk.out/**",
+    //         "**/.vscode/**",
+    //         "**/.DS_Store/**",
+    //         "**/.git/**",
+    //         "**/.github/**",
+    //         "**/.mypy_cache/**",
+    //       ],
+    //     }),
+    //   ],
+    //   destinationBucket: sourceBucket,
+    // });
     // CodeBuild used for api publication
-    const apiPublishCodebuild = new ApiPublishCodebuild(
-      this,
-      "ApiPublishCodebuild",
-      {
-        sourceBucket,
-        dbSecret: vectorStore.secret,
-      }
-    );
+    // const apiPublishCodebuild = new ApiPublishCodebuild(
+    //   this,
+    //   "ApiPublishCodebuild",
+    //   {
+    //     sourceBucket,
+    //     dbSecret: vectorStore.secret,
+    //   }
+    // );
     // CodeBuild used for KnowledgeBase
-    const bedrockKnowledgeBaseCodebuild = new BedrockKnowledgeBaseCodebuild(
-      this,
-      "BedrockKnowledgeBaseCodebuild",
-      {
-        sourceBucket,
-      }
-    );
+    // const bedrockKnowledgeBaseCodebuild = new BedrockKnowledgeBaseCodebuild(
+    //   this,
+    //   "BedrockKnowledgeBaseCodebuild",
+    //   {
+    //     sourceBucket,
+    //   }
+    // );
 
     const frontend = new Frontend(this, "Frontend", {
       accessLogBucket,
       webAclId: props.webAclId,
+      useStreaming: props.useStreaming,
       enableMistral: props.enableMistral,
       enableIpV6: props.enableIpV6,
     });
@@ -171,14 +180,16 @@ export class BedrockChatStack extends cdk.Stack {
 
     const backendApi = new Api(this, "BackendApi", {
       vpc,
+      subnets: subnets,
+      apiGatewayEndpointId: props.apiGatewayEndpointId,
       database: database.table,
       auth,
       bedrockRegion: props.bedrockRegion,
       tableAccessRole: database.tableAccessRole,
-      dbSecrets: vectorStore.secret,
+      // vectorStore.secret,
       documentBucket,
-      apiPublishProject: apiPublishCodebuild.project,
-      bedrockKnowledgeBaseProject: bedrockKnowledgeBaseCodebuild.project,
+      // apiPublishCodebuild.project,
+      //bedrockKnowledgeBaseProject: bedrockKnowledgeBaseCodebuild.project,
       usageAnalysis,
       largeMessageBucket,
       enableMistral: props.enableMistral,
@@ -186,24 +197,25 @@ export class BedrockChatStack extends cdk.Stack {
     documentBucket.grantReadWrite(backendApi.handler);
 
     // For streaming response
-    const websocket = new WebSocket(this, "WebSocket", {
-      accessLogBucket,
-      vpc,
-      dbSecrets: vectorStore.secret,
-      database: database.table,
-      tableAccessRole: database.tableAccessRole,
-      websocketSessionTable: database.websocketSessionTable,
-      auth,
-      bedrockRegion: props.bedrockRegion,
-      largeMessageBucket,
-      documentBucket,
-      enableMistral: props.enableMistral,
-    });
+    // const websocket = new WebSocket(this, "WebSocket", {
+    //   accessLogBucket,
+    //   vpc,
+    //   dbSecrets: vectorStore.secret,
+    //   database: database.table,
+    //   tableAccessRole: database.tableAccessRole,
+    //   websocketSessionTable: database.websocketSessionTable,
+    //   auth,
+    //   bedrockRegion: props.bedrockRegion,
+    //   largeMessageBucket,
+    //   documentBucket,
+    //  enableMistral: props.enableMistral,
+    // });
     frontend.buildViteApp({
       backendApiEndpoint: backendApi.privateUrl,
-      webSocketApiEndpoint: websocket.apiEndpoint,
+      webSocketApiEndpoint: "", // websocket.apiEndpoint,
       userPoolDomainPrefix: props.userPoolDomainPrefix,
       enableMistral: props.enableMistral,
+      useStreaming: props.useStreaming,
       auth,
       idp,
     });
@@ -215,23 +227,23 @@ export class BedrockChatStack extends cdk.Stack {
       maxAge: 3000,
     });
 
-    const embedding = new Embedding(this, "Embedding", {
-      vpc,
-      bedrockRegion: props.bedrockRegion,
-      database: database.table,
-      dbSecrets: vectorStore.secret,
-      tableAccessRole: database.tableAccessRole,
-      documentBucket,
-      embeddingContainerVcpu: props.embeddingContainerVcpu,
-      embeddingContainerMemory: props.embeddingContainerMemory,
-      bedrockKnowledgeBaseProject: bedrockKnowledgeBaseCodebuild.project,
-    });
-    documentBucket.grantRead(embedding.container.taskDefinition.taskRole);
+    // const embedding = new Embedding(this, "Embedding", {
+    //   vpc,
+    //   bedrockRegion: props.bedrockRegion,
+    //   database: database.table,
+    //   dbSecrets: vectorStore.secret,
+    //   tableAccessRole: database.tableAccessRole,
+    //   documentBucket,
+    //   embeddingContainerVcpu: props.embeddingContainerVcpu,
+    //   embeddingContainerMemory: props.embeddingContainerMemory,
+    //  bedrockKnowledgeBaseProject: bedrockKnowledgeBaseCodebuild.project,
+    // });
+    // documentBucket.grantRead(embedding.container.taskDefinition.taskRole);
 
-    vectorStore.allowFrom(embedding.taskSecurityGroup);
-    vectorStore.allowFrom(embedding.removalHandler);
-    vectorStore.allowFrom(backendApi.handler);
-    vectorStore.allowFrom(websocket.handler);
+    // vectorStore.allowFrom(embedding.taskSecurityGroup);
+    // vectorStore.allowFrom(embedding.removalHandler);
+    // vectorStore.allowFrom(backendApi.handler);
+    // vectorStore.allowFrom(websocket.handler);
 
     // WebAcl for published API
     const webAclForPublishedApi = new WebAclForPublishedApi(
@@ -259,42 +271,42 @@ export class BedrockChatStack extends cdk.Stack {
       value: vpc.vpcId,
       exportName: "BedrockClaudeChatVpcId",
     });
-    new CfnOutput(this, "AvailabilityZone0", {
-      value: vpc.availabilityZones[0],
-      exportName: "BedrockClaudeChatAvailabilityZone0",
-    });
-    new CfnOutput(this, "AvailabilityZone1", {
-      value: vpc.availabilityZones[1],
-      exportName: "BedrockClaudeChatAvailabilityZone1",
-    });
-    new CfnOutput(this, "PublicSubnetId0", {
-      value: vpc.publicSubnets[0].subnetId,
-      exportName: "BedrockClaudeChatPublicSubnetId0",
-    });
-    new CfnOutput(this, "PublicSubnetId1", {
-      value: vpc.publicSubnets[1].subnetId,
-      exportName: "BedrockClaudeChatPublicSubnetId1",
-    });
-    new CfnOutput(this, "PrivateSubnetId0", {
-      value: vpc.privateSubnets[0].subnetId,
-      exportName: "BedrockClaudeChatPrivateSubnetId0",
-    });
-    new CfnOutput(this, "PrivateSubnetId1", {
-      value: vpc.privateSubnets[1].subnetId,
-      exportName: "BedrockClaudeChatPrivateSubnetId1",
-    });
-    new CfnOutput(this, "DbConfigSecretArn", {
-      value: vectorStore.secret.secretArn,
-      exportName: "BedrockClaudeChatDbConfigSecretArn",
-    });
-    new CfnOutput(this, "DbConfigHostname", {
-      value: vectorStore.cluster.clusterEndpoint.hostname,
-      exportName: "BedrockClaudeChatDbConfigHostname",
-    });
-    new CfnOutput(this, "DbConfigPort", {
-      value: vectorStore.cluster.clusterEndpoint.port.toString(),
-      exportName: "BedrockClaudeChatDbConfigPort",
-    });
+    // new CfnOutput(this, "AvailabilityZone0", {
+    //   value: vpc.availabilityZones[0],
+    //   exportName: "BedrockClaudeChatAvailabilityZone0",
+    // });
+    // new CfnOutput(this, "AvailabilityZone1", {
+    //   value: vpc.availabilityZones[1],
+    //   exportName: "BedrockClaudeChatAvailabilityZone1",
+    // });
+    // new CfnOutput(this, "PublicSubnetId0", {
+    //   value: vpc.publicSubnets[0].subnetId,
+    //   exportName: "BedrockClaudeChatPublicSubnetId0",
+    // });
+    // new CfnOutput(this, "PublicSubnetId1", {
+    //   value: vpc.publicSubnets[1].subnetId,
+    //   exportName: "BedrockClaudeChatPublicSubnetId1",
+    // });
+    // new CfnOutput(this, "PrivateSubnetId0", {
+    //   value: vpc.privateSubnets[0].subnetId,
+    //   exportName: "BedrockClaudeChatPrivateSubnetId0",
+    // });
+    // new CfnOutput(this, "PrivateSubnetId1", {
+    //   value: vpc.privateSubnets[1].subnetId,
+    //   exportName: "BedrockClaudeChatPrivateSubnetId1",
+    // });
+    // new CfnOutput(this, "DbConfigSecretArn", {
+    //   value: vectorStore.secret.secretArn,
+    //   exportName: "BedrockClaudeChatDbConfigSecretArn",
+    // });
+    // new CfnOutput(this, "DbConfigHostname", {
+    //   value: vectorStore.cluster.clusterEndpoint.hostname,
+    //   exportName: "BedrockClaudeChatDbConfigHostname",
+    // });
+    // new CfnOutput(this, "DbConfigPort", {
+    //   value: vectorStore.cluster.clusterEndpoint.port.toString(),
+    //   exportName: "BedrockClaudeChatDbConfigPort",
+    // });
     new CfnOutput(this, "ConversationTableName", {
       value: database.table.tableName,
       exportName: "BedrockClaudeChatConversationTableName",
@@ -303,10 +315,10 @@ export class BedrockChatStack extends cdk.Stack {
       value: database.tableAccessRole.roleArn,
       exportName: "BedrockClaudeChatTableAccessRoleArn",
     });
-    new CfnOutput(this, "DbSecurityGroupId", {
-      value: vectorStore.securityGroup.securityGroupId,
-      exportName: "BedrockClaudeChatDbSecurityGroupId",
-    });
+    // new CfnOutput(this, "DbSecurityGroupId", {
+    //   value: vectorStore.securityGroup.securityGroupId,
+    //   exportName: "BedrockClaudeChatDbSecurityGroupId",
+    // });
     new CfnOutput(this, "LargeMessageBucketName", {
       value: largeMessageBucket.bucketName,
       exportName: "BedrockClaudeChatLargeMessageBucketName",

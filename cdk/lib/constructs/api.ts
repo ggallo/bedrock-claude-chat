@@ -34,16 +34,18 @@ import * as codebuild from "aws-cdk-lib/aws-codebuild";
 import { UsageAnalysis } from "./usage-analysis";
 export interface ApiProps {
   readonly vpc: ec2.IVpc;
+  readonly subnets: ec2.ISubnet[];
+  readonly apiGatewayEndpointId: string;
   readonly database: ITable;
-  readonly dbSecrets: ISecret;
+  readonly dbSecrets?: ISecret;
   readonly corsAllowOrigins?: string[];
   readonly auth: Auth;
   readonly bedrockRegion: string;
   readonly tableAccessRole: iam.IRole;
   readonly documentBucket: IBucket;
   readonly largeMessageBucket: IBucket;
-  readonly apiPublishProject: codebuild.IProject;
-  readonly bedrockKnowledgeBaseProject: codebuild.IProject;
+  readonly apiPublishProject?: codebuild.IProject;
+  readonly bedrockKnowledgeBaseProject?: codebuild.IProject;
   readonly usageAnalysis?: UsageAnalysis;
   readonly enableMistral: boolean;
 }
@@ -61,10 +63,11 @@ export class Api extends Construct {
       corsAllowOrigins: allowOrigins = ["*"],
     } = props;
 
-    const vpcEndpoint = props.vpc.addInterfaceEndpoint('APIGWVpcEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.APIGATEWAY,
-      privateDnsEnabled: false
-    });
+    const vpcEndpoint = ec2.InterfaceVpcEndpoint
+      .fromInterfaceVpcEndpointAttributes(this, "APIGatewatVPCEndpoint", {
+        port: 443,
+        vpcEndpointId: props.apiGatewayEndpointId,
+      });
 
     const usageAnalysisOutputLocation =
       `s3://${props.usageAnalysis?.resultOutputBucket.bucketName}` || "";
@@ -90,39 +93,42 @@ export class Api extends Construct {
         "service-role/AWSLambdaVPCAccessExecutionRole"
       )
     );
-    handlerRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["codebuild:StartBuild"],
-        resources: [
-          props.apiPublishProject.projectArn,
-          props.bedrockKnowledgeBaseProject.projectArn,
-        ],
-      })
-    );
-    handlerRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "cloudformation:DescribeStacks",
-          "cloudformation:DescribeStackEvents",
-          "cloudformation:DescribeStackResource",
-          "cloudformation:DescribeStackResources",
-          "cloudformation:DeleteStack",
-        ],
-        resources: [`*`],
-      })
-    );
-    handlerRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["codebuild:BatchGetBuilds"],
-        resources: [
-          props.apiPublishProject.projectArn,
-          props.bedrockKnowledgeBaseProject.projectArn,
-        ],
-      })
-    );
+
+    if (props.apiPublishProject && props.bedrockKnowledgeBaseProject) {
+      handlerRole.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["codebuild:StartBuild"],
+          resources: [
+            props.apiPublishProject.projectArn,
+            props.bedrockKnowledgeBaseProject.projectArn,
+          ],
+        })
+      );
+      handlerRole.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            "cloudformation:DescribeStacks",
+            "cloudformation:DescribeStackEvents",
+            "cloudformation:DescribeStackResource",
+            "cloudformation:DescribeStackResources",
+            "cloudformation:DeleteStack",
+          ],
+          resources: [`*`],
+        })
+      );
+      handlerRole.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["codebuild:BatchGetBuilds"],
+          resources: [
+            props.apiPublishProject.projectArn,
+            props.bedrockKnowledgeBaseProject.projectArn,
+          ],
+        })
+      );
+    }
     handlerRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -208,12 +214,12 @@ export class Api extends Construct {
         REGION: Stack.of(this).region,
         BEDROCK_REGION: props.bedrockRegion,
         TABLE_ACCESS_ROLE_ARN: tableAccessRole.roleArn,
-        DB_SECRETS_ARN: props.dbSecrets.secretArn,
+        DB_SECRETS_ARN: props.dbSecrets?.secretArn || "",
         DOCUMENT_BUCKET: props.documentBucket.bucketName,
         LARGE_MESSAGE_BUCKET: props.largeMessageBucket.bucketName,
-        PUBLISH_API_CODEBUILD_PROJECT_NAME: props.apiPublishProject.projectName,
+        PUBLISH_API_CODEBUILD_PROJECT_NAME: props.apiPublishProject?.projectName || "",
         KNOWLEDGE_BASE_CODEBUILD_PROJECT_NAME:
-          props.bedrockKnowledgeBaseProject.projectName,
+          props.bedrockKnowledgeBaseProject?.projectName || "",
         USAGE_ANALYSIS_DATABASE:
           props.usageAnalysis?.database.databaseName || "",
         USAGE_ANALYSIS_TABLE:
@@ -224,9 +230,9 @@ export class Api extends Construct {
       },
       role: handlerRole,
     });
-    props.dbSecrets.grantRead(handler);
-
-    // const integration = new LambdaIntegration(handler);
+    if (props.dbSecrets) {
+      props.dbSecrets.grantRead(handler)
+    }
 
     const authorizer = new CognitoUserPoolsAuthorizer(this, "Authorizer", {
       cognitoUserPools: [props.auth.userPool]

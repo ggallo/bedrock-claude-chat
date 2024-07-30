@@ -20,6 +20,7 @@ export interface FrontendProps {
   readonly enableMistral: boolean;
   readonly accessLogBucket?: IBucket;
   readonly enableIpV6: boolean;
+  readonly useStreaming: boolean;
 }
 
 export class Frontend extends Construct {
@@ -100,6 +101,7 @@ export class Frontend extends Construct {
     webSocketApiEndpoint,
     userPoolDomainPrefix,
     enableMistral,
+    useStreaming,
     auth,
     idp,
   }: {
@@ -107,6 +109,7 @@ export class Frontend extends Construct {
     webSocketApiEndpoint: string;
     userPoolDomainPrefix: string;
     enableMistral: boolean;
+    useStreaming: boolean;
     auth: Auth;
     idp: Idp;
   }) {
@@ -120,7 +123,7 @@ export class Frontend extends Construct {
         VITE_APP_USER_POOL_CLIENT_ID: auth.client.userPoolClientId,
         VITE_APP_ENABLE_MISTRAL: enableMistral.toString(),
         VITE_APP_REGION: region,
-        VITE_APP_USE_STREAMING: "true",
+        VITE_APP_USE_STREAMING: useStreaming.toString(),
       };
 
       if (!idp.isExist()) return defaultProps;
